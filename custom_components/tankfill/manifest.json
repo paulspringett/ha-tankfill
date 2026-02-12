@@ -1,0 +1,10 @@
+{
+  "domain": "tankfill",
+  "name": "Tank Fill",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "",
+  "iot_class": "local_polling",
+  "version": "1.0.0"
+}

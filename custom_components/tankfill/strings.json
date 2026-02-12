@@ -1,0 +1,51 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Tank Fill",
+        "description": "Configure your oil tank monitoring.",
+        "data": {
+          "depth_sensor": "Depth sensor",
+          "tank_diameter": "Tank diameter",
+          "tank_length": "Tank length",
+          "price_per_litre": "Price per litre"
+        },
+        "data_description": {
+          "depth_sensor": "Sensor entity that reports the oil depth in cm.",
+          "tank_diameter": "Internal diameter of the horizontal cylindrical tank in cm.",
+          "tank_length": "Internal length of the horizontal cylindrical tank in cm.",
+          "price_per_litre": "Cost of heating oil per litre in GBP."
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Tank Fill Options",
+        "data": {
+          "price_per_litre": "Price per litre"
+        },
+        "data_description": {
+          "price_per_litre": "Cost of heating oil per litre in GBP."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "oil_volume": {
+        "name": "Oil Volume"
+      },
+      "oil_fill_percentage": {
+        "name": "Oil Fill Percentage"
+      },
+      "oil_daily_usage": {
+        "name": "Oil Daily Usage"
+      },
+      "oil_daily_cost": {
+        "name": "Oil Daily Cost"
+      }
+    }
+  }
+}
