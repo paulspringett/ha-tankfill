@@ -14,7 +14,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfVolume
+from homeassistant.const import UnitOfLength, UnitOfVolume
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -48,6 +48,7 @@ async def async_setup_entry(
     length = entry.data[CONF_TANK_LENGTH]
     price = entry.options.get(CONF_PRICE_PER_LITRE, DEFAULT_PRICE_PER_LITRE)
 
+    oil_depth_sensor = TankOilDepthSensor(entry)
     volume_sensor = TankVolumeSensor(entry, diameter, length)
     percentage_sensor = TankFillPercentageSensor(entry, diameter, length)
     daily_usage_sensor = TankDailyUsageSensor(entry)
@@ -57,7 +58,7 @@ async def async_setup_entry(
     daily_usage_sensor.set_cost_sensor(daily_cost_sensor)
 
     async_add_entities(
-        [volume_sensor, percentage_sensor, daily_usage_sensor, daily_cost_sensor],
+        [oil_depth_sensor, volume_sensor, percentage_sensor, daily_usage_sensor, daily_cost_sensor],
         update_before_add=False,
     )
 
@@ -73,9 +74,11 @@ async def async_setup_entry(
         except (ValueError, TypeError):
             return
 
+        liquid_depth = diameter - depth
         volume = calculate_volume(depth, diameter, length)
         max_vol = max_volume(diameter, length)
 
+        oil_depth_sensor.update_depth(liquid_depth)
         volume_sensor.update_volume(volume)
         percentage_sensor.update_percentage(volume, max_vol)
         daily_usage_sensor.update_usage(volume)
@@ -96,8 +99,10 @@ async def async_setup_entry(
         except (ValueError, TypeError):
             pass
         else:
+            liquid_depth = diameter - depth
             volume = calculate_volume(depth, diameter, length)
             max_vol = max_volume(diameter, length)
+            oil_depth_sensor.update_depth(liquid_depth)
             volume_sensor.update_volume(volume)
             percentage_sensor.update_percentage(volume, max_vol)
             daily_usage_sensor.update_usage(volume)
@@ -117,6 +122,27 @@ class TankFillBaseSensor(SensorEntity):
             name="Oil Tank",
             manufacturer="Tank Fill",
         )
+
+
+class TankOilDepthSensor(TankFillBaseSensor):
+    """Sensor for oil depth in cm."""
+
+    _attr_device_class = SensorDeviceClass.DISTANCE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfLength.CENTIMETERS
+    _attr_suggested_display_precision = 1
+    _attr_translation_key = "oil_depth"
+
+    def __init__(self, entry: ConfigEntry) -> None:
+        """Initialise the oil depth sensor."""
+        super().__init__(entry)
+        self._attr_unique_id = f"{entry.entry_id}_oil_depth"
+
+    @callback
+    def update_depth(self, depth: float) -> None:
+        """Update the oil depth value."""
+        self._attr_native_value = round(max(depth, 0.0), 1)
+        self.async_write_ha_state()
 
 
 class TankVolumeSensor(TankFillBaseSensor):

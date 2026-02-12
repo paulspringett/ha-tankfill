@@ -34,6 +34,9 @@
   },
   "entity": {
     "sensor": {
+      "oil_depth": {
+        "name": "Oil Depth"
+      },
       "oil_volume": {
         "name": "Oil Volume"
       },
