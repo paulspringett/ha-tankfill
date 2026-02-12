@@ -4,10 +4,11 @@ A Home Assistant custom integration for monitoring oil levels in a horizontal cy
 
 ## Sensors
 
-The integration creates four sensors under a single **Oil Tank** device:
+The integration creates five sensors under a single **Oil Tank** device:
 
 | Sensor              | Unit | Description                                        |
 |---------------------|------|----------------------------------------------------|
+| Oil Depth           | cm   | Depth of oil in the tank                           |
 | Oil Volume          | L    | Current volume of oil in the tank                  |
 | Oil Fill Percentage | %    | How full the tank is                               |
 | Oil Daily Usage     | L    | Cumulative oil consumed today (resets at midnight) |
