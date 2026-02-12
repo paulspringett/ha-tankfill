@@ -9,3 +9,4 @@ build/
 *.egg
 .env
 .venv/
+.claude/settings.local.json
