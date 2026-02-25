@@ -66,6 +66,9 @@
       },
       "oil_yearly_cost": {
         "name": "Yearly Cost"
+      },
+      "oil_last_refill": {
+        "name": "Last Refill"
       }
     }
   }

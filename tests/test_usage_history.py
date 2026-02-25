@@ -38,6 +38,45 @@ class TestAddReading:
         h.add_reading(_dt(), 480.0)
         assert len(h.as_list()) == 2  # 450-day-old reading pruned
 
+    def test_returns_none_for_normal_reading(self):
+        h = UsageHistory()
+        assert h.add_reading(_dt(days_ago=1), 500.0) is None
+        assert h.add_reading(_dt(), 490.0) is None
+
+    def test_returns_none_for_first_reading(self):
+        h = UsageHistory()
+        assert h.add_reading(_dt(), 500.0) is None
+
+    def test_returns_refill_dict_for_large_increase(self):
+        h = UsageHistory()
+        h.add_reading(_dt(days_ago=1), 400.0)
+        ts = _dt()
+        result = h.add_reading(ts, 600.0)
+        assert result is not None
+        assert result["timestamp"] == ts.isoformat()
+        assert result["volume_before"] == 400.0
+        assert result["volume_after"] == 600.0
+        assert result["litres_added"] == 200.0
+
+    def test_increase_at_threshold_not_flagged(self):
+        """An increase of exactly 100L should NOT be flagged as a refill."""
+        h = UsageHistory()
+        h.add_reading(_dt(days_ago=1), 500.0)
+        assert h.add_reading(_dt(), 600.0) is None
+
+    def test_increase_just_above_threshold_flagged(self):
+        """An increase of 100.1L should be flagged as a refill."""
+        h = UsageHistory()
+        h.add_reading(_dt(days_ago=1), 500.0)
+        result = h.add_reading(_dt(), 600.1)
+        assert result is not None
+        assert result["litres_added"] == pytest.approx(100.1)
+
+    def test_small_increase_not_flagged(self):
+        h = UsageHistory()
+        h.add_reading(_dt(days_ago=1), 500.0)
+        assert h.add_reading(_dt(), 550.0) is None
+
 
 class TestUsageSince:
     """Test consumption calculation over rolling windows."""

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 from typing import Any
 
@@ -61,6 +61,9 @@ async def async_setup_entry(
     monthly_cost = TankPeriodCostSensor(entry, "monthly_cost", "oil_monthly_cost", price)
     yearly_cost = TankPeriodCostSensor(entry, "yearly_cost", "oil_yearly_cost", price)
 
+    # Refill sensor
+    last_refill_sensor = TankLastRefillSensor(entry)
+
     # Tracker sensor (avg daily usage) — owns UsageHistory and drives all dependents
     tracker = TankUsageTrackerSensor(
         entry,
@@ -71,6 +74,7 @@ async def async_setup_entry(
             "monthly": monthly_cost,
             "yearly": yearly_cost,
         },
+        refill_sensor=last_refill_sensor,
     )
 
     async_add_entities(
@@ -86,6 +90,7 @@ async def async_setup_entry(
             weekly_cost,
             monthly_cost,
             yearly_cost,
+            last_refill_sensor,
         ],
         update_before_add=False,
     )
@@ -225,6 +230,29 @@ class TankFillPercentageSensor(TankFillBaseSensor):
         self.async_write_ha_state()
 
 
+class TankLastRefillSensor(TankFillBaseSensor):
+    """Sensor showing the date/time of the last tank refill."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_translation_key = "oil_last_refill"
+
+    def __init__(self, entry: ConfigEntry) -> None:
+        """Initialise the last refill sensor."""
+        super().__init__(entry)
+        self._attr_unique_id = f"{entry.entry_id}_last_refill"
+
+    @callback
+    def set_refill(self, refill_info: dict) -> None:
+        """Update from a refill detection dict."""
+        self._attr_native_value = datetime.fromisoformat(refill_info["timestamp"])
+        self._attr_extra_state_attributes = {
+            "volume_before": refill_info["volume_before"],
+            "volume_after": refill_info["volume_after"],
+            "litres_added": refill_info["litres_added"],
+        }
+        self.async_write_ha_state()
+
+
 class UsageStoredData(SensorExtraStoredData):
     """Stored data for the usage tracker sensor."""
 
@@ -232,17 +260,20 @@ class UsageStoredData(SensorExtraStoredData):
         self,
         super_data: SensorExtraStoredData,
         readings: list[dict[str, str | float]],
+        last_refill: dict | None = None,
     ) -> None:
         """Initialise stored data."""
         super().__init__(
             super_data.native_value, super_data.native_unit_of_measurement
         )
         self.readings = readings
+        self.last_refill = last_refill
 
     def as_dict(self) -> dict[str, Any]:
         """Return a dict representation of the stored data."""
         data = super().as_dict()
         data["readings"] = self.readings
+        data["last_refill"] = self.last_refill
         return data
 
     @classmethod
@@ -254,6 +285,7 @@ class UsageStoredData(SensorExtraStoredData):
         return cls(
             extra,
             readings=restored.get("readings", []),
+            last_refill=restored.get("last_refill"),
         )
 
 
@@ -274,6 +306,7 @@ class TankUsageTrackerSensor(TankFillBaseSensor, RestoreSensor):
         entry: ConfigEntry,
         usage_sensors: dict[str, TankPeriodUsageSensor],
         cost_sensors: dict[str, TankPeriodCostSensor],
+        refill_sensor: TankLastRefillSensor | None = None,
     ) -> None:
         """Initialise the usage tracker sensor."""
         super().__init__(entry)
@@ -281,6 +314,8 @@ class TankUsageTrackerSensor(TankFillBaseSensor, RestoreSensor):
         self._history = UsageHistory()
         self._usage_sensors = usage_sensors
         self._cost_sensors = cost_sensors
+        self._refill_sensor = refill_sensor
+        self._last_refill: dict | None = None
 
     @property
     def extra_restore_state_data(self) -> UsageStoredData:
@@ -288,6 +323,7 @@ class TankUsageTrackerSensor(TankFillBaseSensor, RestoreSensor):
         return UsageStoredData(
             super().extra_restore_state_data,
             readings=self._history.as_list(),
+            last_refill=self._last_refill,
         )
 
     async def async_added_to_hass(self) -> None:
@@ -299,11 +335,19 @@ class TankUsageTrackerSensor(TankFillBaseSensor, RestoreSensor):
             if last_data is not None and last_data.readings:
                 self._history = UsageHistory.from_list(last_data.readings)
                 self._recalculate()
+            if last_data is not None and last_data.last_refill:
+                self._last_refill = last_data.last_refill
+                if self._refill_sensor is not None:
+                    self._refill_sensor.set_refill(self._last_refill)
 
     @callback
     def update_usage(self, volume: float) -> None:
         """Record a new volume reading and recalculate all sensors."""
-        self._history.add_reading(dt_util.now(), volume)
+        refill = self._history.add_reading(dt_util.now(), volume)
+        if refill is not None:
+            self._last_refill = refill
+            if self._refill_sensor is not None:
+                self._refill_sensor.set_refill(refill)
         self._recalculate()
 
     def _recalculate(self) -> None:

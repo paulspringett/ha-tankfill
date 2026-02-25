@@ -5,6 +5,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 
+REFILL_THRESHOLD = 100  # litres – volume increase above this = refill
+
+
 class UsageHistory:
     """Tracks volume readings and calculates consumption over rolling windows.
 
@@ -23,13 +26,31 @@ class UsageHistory:
         """
         self._readings: list[tuple[str, float]] = readings or []
 
-    def add_reading(self, timestamp: datetime, volume: float) -> None:
-        """Append a reading and prune entries older than MAX_AGE_DAYS."""
+    def add_reading(self, timestamp: datetime, volume: float) -> dict | None:
+        """Append a reading and prune entries older than MAX_AGE_DAYS.
+
+        Returns a refill dict if the volume increased by more than
+        REFILL_THRESHOLD since the previous reading, otherwise None.
+        """
+        prev_vol: float | None = self._readings[-1][1] if self._readings else None
+
         self._readings.append((timestamp.isoformat(), volume))
         cutoff = (timestamp - timedelta(days=self.MAX_AGE_DAYS)).isoformat()
         self._readings = [
             (ts, vol) for ts, vol in self._readings if ts >= cutoff
         ]
+
+        if prev_vol is not None:
+            delta = volume - prev_vol
+            if delta > REFILL_THRESHOLD:
+                return {
+                    "timestamp": timestamp.isoformat(),
+                    "volume_before": prev_vol,
+                    "volume_after": volume,
+                    "litres_added": delta,
+                }
+
+        return None
 
     def usage_since(self, since: datetime) -> float:
         """Calculate total consumption within the window starting at *since*.

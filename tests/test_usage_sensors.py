@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from custom_components.tankfill.sensor import (
+    TankLastRefillSensor,
     TankPeriodCostSensor,
     TankPeriodUsageSensor,
     TankUsageTrackerSensor,
@@ -25,7 +26,7 @@ def _stub_write(sensor):
 
 
 def _make_sensors(price: float = 0.55):
-    """Create a full set of tracker + period + cost sensors for testing."""
+    """Create a full set of tracker + period + cost + refill sensors for testing."""
     entry = FakeConfigEntry()
 
     weekly = TankPeriodUsageSensor(entry, "weekly_usage", "oil_weekly_usage")
@@ -37,6 +38,8 @@ def _make_sensors(price: float = 0.55):
     monthly_cost = TankPeriodCostSensor(entry, "monthly_cost", "oil_monthly_cost", price)
     yearly_cost = TankPeriodCostSensor(entry, "yearly_cost", "oil_yearly_cost", price)
 
+    refill = TankLastRefillSensor(entry)
+
     tracker = TankUsageTrackerSensor(
         entry,
         usage_sensors={"weekly": weekly, "monthly": monthly, "yearly": yearly},
@@ -46,10 +49,11 @@ def _make_sensors(price: float = 0.55):
             "monthly": monthly_cost,
             "yearly": yearly_cost,
         },
+        refill_sensor=refill,
     )
 
     # Stub async_write_ha_state on all sensors
-    for s in [tracker, weekly, monthly, yearly, daily_cost, weekly_cost, monthly_cost, yearly_cost]:
+    for s in [tracker, weekly, monthly, yearly, daily_cost, weekly_cost, monthly_cost, yearly_cost, refill]:
         _stub_write(s)
 
     return tracker, {
@@ -60,6 +64,7 @@ def _make_sensors(price: float = 0.55):
         "weekly_cost": weekly_cost,
         "monthly_cost": monthly_cost,
         "yearly_cost": yearly_cost,
+        "refill": refill,
     }
 
 
@@ -218,3 +223,56 @@ class TestPeriodCostSensor:
     def test_unique_id(self):
         sensor = TankPeriodCostSensor(FakeConfigEntry(), "yearly_cost", "oil_yearly_cost", 0.55)
         assert sensor._attr_unique_id == "test_entry_yearly_cost"
+
+
+class TestRefillSensor:
+    """Test that the tracker detects refills and pushes to the refill sensor."""
+
+    def test_refill_detected(self):
+        tracker, sensors = _make_sensors()
+        with patch("custom_components.tankfill.sensor.dt_util") as mock_dt:
+            mock_dt.now.return_value = _fake_now(days_ago=1)
+            tracker.update_usage(400.0)
+            mock_dt.now.return_value = _fake_now()
+            tracker.update_usage(600.0)  # +200L refill
+
+        refill = sensors["refill"]
+        assert refill._attr_native_value == _fake_now()
+        assert refill._attr_extra_state_attributes["volume_before"] == 400.0
+        assert refill._attr_extra_state_attributes["volume_after"] == 600.0
+        assert refill._attr_extra_state_attributes["litres_added"] == 200.0
+
+    def test_no_refill_for_small_increase(self):
+        tracker, sensors = _make_sensors()
+        with patch("custom_components.tankfill.sensor.dt_util") as mock_dt:
+            mock_dt.now.return_value = _fake_now(days_ago=1)
+            tracker.update_usage(500.0)
+            mock_dt.now.return_value = _fake_now()
+            tracker.update_usage(550.0)  # +50L, below threshold
+
+        assert getattr(sensors["refill"], "_attr_native_value", None) is None
+
+    def test_no_refill_for_consumption(self):
+        tracker, sensors = _make_sensors()
+        with patch("custom_components.tankfill.sensor.dt_util") as mock_dt:
+            mock_dt.now.return_value = _fake_now(days_ago=1)
+            tracker.update_usage(500.0)
+            mock_dt.now.return_value = _fake_now()
+            tracker.update_usage(490.0)  # consumption
+
+        assert getattr(sensors["refill"], "_attr_native_value", None) is None
+
+    def test_refill_sensor_unique_id(self):
+        sensor = TankLastRefillSensor(FakeConfigEntry())
+        assert sensor._attr_unique_id == "test_entry_last_refill"
+
+    def test_tracker_stores_last_refill(self):
+        tracker, sensors = _make_sensors()
+        with patch("custom_components.tankfill.sensor.dt_util") as mock_dt:
+            mock_dt.now.return_value = _fake_now(days_ago=1)
+            tracker.update_usage(400.0)
+            mock_dt.now.return_value = _fake_now()
+            tracker.update_usage(600.0)
+
+        assert tracker._last_refill is not None
+        assert tracker._last_refill["litres_added"] == 200.0
