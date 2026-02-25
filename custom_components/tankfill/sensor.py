@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import timedelta
 import logging
 from typing import Any
 
@@ -18,10 +18,7 @@ from homeassistant.const import UnitOfLength, UnitOfVolume
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.event import (
-    async_track_state_change_event,
-    async_track_time_change,
-)
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
 from .calc import calculate_volume, max_volume
@@ -33,6 +30,7 @@ from .const import (
     DEFAULT_PRICE_PER_LITRE,
     DOMAIN,
 )
+from .usage_history import UsageHistory
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,14 +49,44 @@ async def async_setup_entry(
     oil_depth_sensor = TankOilDepthSensor(entry)
     volume_sensor = TankVolumeSensor(entry, diameter, length)
     percentage_sensor = TankFillPercentageSensor(entry, diameter, length)
-    daily_usage_sensor = TankDailyUsageSensor(entry)
-    daily_cost_sensor = TankDailyCostSensor(entry, price)
 
-    # Wire up the daily usage -> daily cost callback
-    daily_usage_sensor.set_cost_sensor(daily_cost_sensor)
+    # Usage period sensors
+    weekly_usage = TankPeriodUsageSensor(entry, "weekly_usage", "oil_weekly_usage")
+    monthly_usage = TankPeriodUsageSensor(entry, "monthly_usage", "oil_monthly_usage")
+    yearly_usage = TankPeriodUsageSensor(entry, "yearly_usage", "oil_yearly_usage")
+
+    # Cost sensors
+    daily_cost = TankPeriodCostSensor(entry, "daily_cost", "oil_avg_daily_cost", price)
+    weekly_cost = TankPeriodCostSensor(entry, "weekly_cost", "oil_weekly_cost", price)
+    monthly_cost = TankPeriodCostSensor(entry, "monthly_cost", "oil_monthly_cost", price)
+    yearly_cost = TankPeriodCostSensor(entry, "yearly_cost", "oil_yearly_cost", price)
+
+    # Tracker sensor (avg daily usage) — owns UsageHistory and drives all dependents
+    tracker = TankUsageTrackerSensor(
+        entry,
+        usage_sensors={"weekly": weekly_usage, "monthly": monthly_usage, "yearly": yearly_usage},
+        cost_sensors={
+            "daily": daily_cost,
+            "weekly": weekly_cost,
+            "monthly": monthly_cost,
+            "yearly": yearly_cost,
+        },
+    )
 
     async_add_entities(
-        [oil_depth_sensor, volume_sensor, percentage_sensor, daily_usage_sensor, daily_cost_sensor],
+        [
+            oil_depth_sensor,
+            volume_sensor,
+            percentage_sensor,
+            tracker,
+            weekly_usage,
+            monthly_usage,
+            yearly_usage,
+            daily_cost,
+            weekly_cost,
+            monthly_cost,
+            yearly_cost,
+        ],
         update_before_add=False,
     )
 
@@ -81,7 +109,7 @@ async def async_setup_entry(
         oil_depth_sensor.update_depth(liquid_depth)
         volume_sensor.update_volume(volume)
         percentage_sensor.update_percentage(volume, max_vol)
-        daily_usage_sensor.update_usage(volume)
+        tracker.update_usage(volume)
 
     # Listen for changes on the external depth sensor
     entry.async_on_unload(
@@ -105,7 +133,7 @@ async def async_setup_entry(
             oil_depth_sensor.update_depth(liquid_depth)
             volume_sensor.update_volume(volume)
             percentage_sensor.update_percentage(volume, max_vol)
-            daily_usage_sensor.update_usage(volume)
+            tracker.update_usage(volume)
 
 
 class TankFillBaseSensor(SensorEntity):
@@ -197,164 +225,157 @@ class TankFillPercentageSensor(TankFillBaseSensor):
         self.async_write_ha_state()
 
 
-class DailyUsageStoredData(SensorExtraStoredData):
-    """Stored data for the daily usage sensor."""
+class UsageStoredData(SensorExtraStoredData):
+    """Stored data for the usage tracker sensor."""
 
     def __init__(
         self,
         super_data: SensorExtraStoredData,
-        daily_usage: float,
-        last_volume: float | None,
-        last_reset: str,
+        readings: list[dict[str, str | float]],
     ) -> None:
         """Initialise stored data."""
         super().__init__(
             super_data.native_value, super_data.native_unit_of_measurement
         )
-        self.daily_usage = daily_usage
-        self.last_volume = last_volume
-        self.last_reset = last_reset
+        self.readings = readings
 
     def as_dict(self) -> dict[str, Any]:
         """Return a dict representation of the stored data."""
         data = super().as_dict()
-        data["daily_usage"] = self.daily_usage
-        data["last_volume"] = self.last_volume
-        data["last_reset"] = self.last_reset
+        data["readings"] = self.readings
         return data
 
     @classmethod
-    def from_dict(cls, restored: dict[str, Any]) -> DailyUsageStoredData | None:
+    def from_dict(cls, restored: dict[str, Any]) -> UsageStoredData | None:
         """Initialize stored data from a dict."""
         extra = SensorExtraStoredData.from_dict(restored)
         if extra is None:
             return None
         return cls(
             extra,
-            daily_usage=restored.get("daily_usage", 0.0),
-            last_volume=restored.get("last_volume"),
-            last_reset=restored.get("last_reset", ""),
+            readings=restored.get("readings", []),
         )
 
 
-class TankDailyUsageSensor(TankFillBaseSensor, RestoreSensor):
-    """Sensor for daily oil usage in litres."""
+class TankUsageTrackerSensor(TankFillBaseSensor, RestoreSensor):
+    """Sensor for average daily oil usage (weekly_usage / 7).
+
+    Owns the UsageHistory and pushes values to dependent usage and cost sensors.
+    """
 
     _attr_device_class = SensorDeviceClass.VOLUME
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfVolume.LITERS
     _attr_suggested_display_precision = 1
-    _attr_translation_key = "oil_daily_usage"
+    _attr_translation_key = "oil_avg_daily_usage"
 
-    def __init__(self, entry: ConfigEntry) -> None:
-        """Initialise the daily usage sensor."""
+    def __init__(
+        self,
+        entry: ConfigEntry,
+        usage_sensors: dict[str, TankPeriodUsageSensor],
+        cost_sensors: dict[str, TankPeriodCostSensor],
+    ) -> None:
+        """Initialise the usage tracker sensor."""
         super().__init__(entry)
         self._attr_unique_id = f"{entry.entry_id}_daily_usage"
-        self._daily_usage: float = 0.0
-        self._last_volume: float | None = None
-        self._cost_sensor: TankDailyCostSensor | None = None
-
-    def set_cost_sensor(self, cost_sensor: TankDailyCostSensor) -> None:
-        """Set reference to the cost sensor for direct updates."""
-        self._cost_sensor = cost_sensor
+        self._history = UsageHistory()
+        self._usage_sensors = usage_sensors
+        self._cost_sensors = cost_sensors
 
     @property
-    def extra_restore_state_data(self) -> DailyUsageStoredData:
+    def extra_restore_state_data(self) -> UsageStoredData:
         """Return sensor-specific state data to be stored."""
-        return DailyUsageStoredData(
+        return UsageStoredData(
             super().extra_restore_state_data,
-            daily_usage=self._daily_usage,
-            last_volume=self._last_volume,
-            last_reset=dt_util.now().isoformat(),
+            readings=self._history.as_list(),
         )
 
     async def async_added_to_hass(self) -> None:
-        """Restore state and set up midnight reset."""
+        """Restore usage history from stored data."""
         await super().async_added_to_hass()
 
         if (extra_data := await self.async_get_last_extra_data()) is not None:
-            last_data = DailyUsageStoredData.from_dict(extra_data.as_dict())
-            if last_data is not None:
-                # Check if midnight was missed while HA was down
-                last_reset_str = last_data.last_reset
-                if last_reset_str:
-                    try:
-                        last_reset_dt = datetime.fromisoformat(last_reset_str)
-                        now = dt_util.now()
-                        if last_reset_dt.date() < now.date():
-                            # Midnight passed while HA was down - reset
-                            self._daily_usage = 0.0
-                            self._last_volume = None
-                            self._attr_last_reset = now.replace(
-                                hour=0, minute=0, second=0, microsecond=0
-                            )
-                        else:
-                            self._daily_usage = last_data.daily_usage
-                            self._last_volume = last_data.last_volume
-                    except (ValueError, TypeError):
-                        self._daily_usage = last_data.daily_usage
-                        self._last_volume = last_data.last_volume
-                else:
-                    self._daily_usage = last_data.daily_usage
-                    self._last_volume = last_data.last_volume
-
-                self._attr_native_value = round(self._daily_usage, 1)
-
-        # Set up midnight reset
-        self.async_on_remove(
-            async_track_time_change(
-                self.hass, self._async_midnight_reset, hour=0, minute=0, second=0
-            )
-        )
+            last_data = UsageStoredData.from_dict(extra_data.as_dict())
+            if last_data is not None and last_data.readings:
+                self._history = UsageHistory.from_list(last_data.readings)
+                self._recalculate()
 
     @callback
-    def _async_midnight_reset(self, now: datetime) -> None:
-        """Reset daily usage at midnight."""
-        self._daily_usage = 0.0
-        self._last_volume = None
-        self._attr_native_value = 0.0
-        self._attr_last_reset = dt_util.now().replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+    def update_usage(self, volume: float) -> None:
+        """Record a new volume reading and recalculate all sensors."""
+        self._history.add_reading(dt_util.now(), volume)
+        self._recalculate()
+
+    def _recalculate(self) -> None:
+        """Recalculate all rolling-window values and push to dependents."""
+        now = dt_util.now()
+        weekly = self._history.usage_since(now - timedelta(days=7))
+        monthly = self._history.usage_since(now - timedelta(days=30))
+        yearly = self._history.usage_since(now - timedelta(days=365))
+        avg_daily = weekly / 7
+
+        # Own value: avg daily usage
+        self._attr_native_value = round(avg_daily, 1)
         self.async_write_ha_state()
-        if self._cost_sensor is not None:
-            self._cost_sensor.update_cost(0.0)
+
+        # Push to usage sensors
+        self._usage_sensors["weekly"].set_value(weekly)
+        self._usage_sensors["monthly"].set_value(monthly)
+        self._usage_sensors["yearly"].set_value(yearly)
+
+        # Push to cost sensors
+        self._cost_sensors["daily"].set_value(avg_daily)
+        self._cost_sensors["weekly"].set_value(weekly)
+        self._cost_sensors["monthly"].set_value(monthly)
+        self._cost_sensors["yearly"].set_value(yearly)
+
+
+class TankPeriodUsageSensor(TankFillBaseSensor):
+    """Sensor for usage over a rolling period (weekly/monthly/yearly)."""
+
+    _attr_device_class = SensorDeviceClass.VOLUME
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfVolume.LITERS
+    _attr_suggested_display_precision = 1
+
+    def __init__(
+        self, entry: ConfigEntry, id_suffix: str, translation_key: str
+    ) -> None:
+        """Initialise a period usage sensor."""
+        super().__init__(entry)
+        self._attr_unique_id = f"{entry.entry_id}_{id_suffix}"
+        self._attr_translation_key = translation_key
 
     @callback
-    def update_usage(self, new_volume: float) -> None:
-        """Update daily usage based on volume change."""
-        if self._last_volume is not None:
-            if new_volume < self._last_volume:
-                # Volume decreased = consumption
-                self._daily_usage += self._last_volume - new_volume
-            # Volume increased = refill, ignore delta
-
-        self._last_volume = new_volume
-        self._attr_native_value = round(self._daily_usage, 1)
+    def set_value(self, usage: float) -> None:
+        """Update the usage value."""
+        self._attr_native_value = round(usage, 1)
         self.async_write_ha_state()
 
-        if self._cost_sensor is not None:
-            self._cost_sensor.update_cost(self._daily_usage)
 
-
-class TankDailyCostSensor(TankFillBaseSensor):
-    """Sensor for daily oil cost in GBP."""
+class TankPeriodCostSensor(TankFillBaseSensor):
+    """Sensor for cost over a rolling period."""
 
     _attr_device_class = SensorDeviceClass.MONETARY
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "GBP"
     _attr_suggested_display_precision = 2
-    _attr_translation_key = "oil_daily_cost"
 
-    def __init__(self, entry: ConfigEntry, price_per_litre: float) -> None:
-        """Initialise the daily cost sensor."""
+    def __init__(
+        self,
+        entry: ConfigEntry,
+        id_suffix: str,
+        translation_key: str,
+        price_per_litre: float,
+    ) -> None:
+        """Initialise a period cost sensor."""
         super().__init__(entry)
-        self._attr_unique_id = f"{entry.entry_id}_daily_cost"
+        self._attr_unique_id = f"{entry.entry_id}_{id_suffix}"
+        self._attr_translation_key = translation_key
         self._price_per_litre = price_per_litre
-        self._attr_native_value = 0.0
 
     @callback
-    def update_cost(self, daily_usage: float) -> None:
-        """Update the cost based on daily usage."""
-        self._attr_native_value = round(daily_usage * self._price_per_litre, 2)
+    def set_value(self, usage: float) -> None:
+        """Update the cost value based on usage."""
+        self._attr_native_value = round(usage * self._price_per_litre, 2)
         self.async_write_ha_state()

@@ -1,10 +1,10 @@
-"""Tests for the DailyUsageStoredData persistence."""
+"""Tests for the UsageStoredData persistence."""
 
 import sys
 
 import pytest
 
-from custom_components.tankfill.sensor import DailyUsageStoredData
+from custom_components.tankfill.sensor import UsageStoredData
 
 SensorExtraStoredData = sys.modules["homeassistant.components.sensor"].SensorExtraStoredData
 
@@ -14,62 +14,53 @@ def _make_super_data():
     return SensorExtraStoredData(native_value=5.0, native_unit_of_measurement="L")
 
 
-class TestDailyUsageStoredData:
+class TestUsageStoredData:
     """Test round-tripping stored data through as_dict/from_dict."""
 
     def test_round_trip(self):
-        data = DailyUsageStoredData(
+        readings = [
+            {"t": "2025-06-14T12:00:00+00:00", "v": 500.0},
+            {"t": "2025-06-15T12:00:00+00:00", "v": 490.0},
+        ]
+        data = UsageStoredData(
             super_data=_make_super_data(),
-            daily_usage=12.5,
-            last_volume=450.0,
-            last_reset="2025-01-15T10:30:00+00:00",
+            readings=readings,
         )
         d = data.as_dict()
-        restored = DailyUsageStoredData.from_dict(d)
+        restored = UsageStoredData.from_dict(d)
 
         assert restored is not None
-        assert restored.daily_usage == 12.5
-        assert restored.last_volume == 450.0
-        assert restored.last_reset == "2025-01-15T10:30:00+00:00"
+        assert restored.readings == readings
 
-    def test_round_trip_with_none_last_volume(self):
-        data = DailyUsageStoredData(
+    def test_round_trip_empty_readings(self):
+        data = UsageStoredData(
             super_data=_make_super_data(),
-            daily_usage=0.0,
-            last_volume=None,
-            last_reset="2025-01-15T00:00:00+00:00",
+            readings=[],
         )
         d = data.as_dict()
-        restored = DailyUsageStoredData.from_dict(d)
+        restored = UsageStoredData.from_dict(d)
 
         assert restored is not None
-        assert restored.daily_usage == 0.0
-        assert restored.last_volume is None
+        assert restored.readings == []
 
     def test_from_dict_defaults(self):
         d = _make_super_data().as_dict()
-        restored = DailyUsageStoredData.from_dict(d)
+        restored = UsageStoredData.from_dict(d)
 
         assert restored is not None
-        assert restored.daily_usage == 0.0
-        assert restored.last_volume is None
-        assert restored.last_reset == ""
+        assert restored.readings == []
 
     def test_from_dict_returns_none_for_bad_base(self):
-        result = DailyUsageStoredData.from_dict({})
+        result = UsageStoredData.from_dict({})
         assert result is None
 
-    def test_as_dict_includes_custom_fields(self):
-        data = DailyUsageStoredData(
+    def test_as_dict_includes_readings(self):
+        readings = [{"t": "2025-06-15T12:00:00+00:00", "v": 500.0}]
+        data = UsageStoredData(
             super_data=_make_super_data(),
-            daily_usage=7.3,
-            last_volume=320.0,
-            last_reset="2025-06-01T00:00:00",
+            readings=readings,
         )
         d = data.as_dict()
 
-        assert "daily_usage" in d
-        assert "last_volume" in d
-        assert "last_reset" in d
-        assert d["daily_usage"] == 7.3
-        assert d["last_volume"] == 320.0
+        assert "readings" in d
+        assert d["readings"] == readings

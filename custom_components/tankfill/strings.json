@@ -43,11 +43,29 @@
       "oil_fill_percentage": {
         "name": "Oil Fill Percentage"
       },
-      "oil_daily_usage": {
-        "name": "Oil Daily Usage"
+      "oil_avg_daily_usage": {
+        "name": "Avg. Daily Usage"
       },
-      "oil_daily_cost": {
-        "name": "Oil Daily Cost"
+      "oil_weekly_usage": {
+        "name": "Weekly Usage"
+      },
+      "oil_monthly_usage": {
+        "name": "Monthly Usage"
+      },
+      "oil_yearly_usage": {
+        "name": "Yearly Usage"
+      },
+      "oil_avg_daily_cost": {
+        "name": "Avg. Daily Cost"
+      },
+      "oil_weekly_cost": {
+        "name": "Weekly Cost"
+      },
+      "oil_monthly_cost": {
+        "name": "Monthly Cost"
+      },
+      "oil_yearly_cost": {
+        "name": "Yearly Cost"
       }
     }
   }
