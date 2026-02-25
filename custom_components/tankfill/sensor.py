@@ -25,6 +25,7 @@ from .calc import calculate_volume, max_volume
 from .const import (
     CONF_DEPTH_SENSOR,
     CONF_PRICE_PER_LITRE,
+    CONF_PRICE_SENSOR,
     CONF_TANK_DIAMETER,
     CONF_TANK_LENGTH,
     DEFAULT_PRICE_PER_LITRE,
@@ -45,6 +46,7 @@ async def async_setup_entry(
     diameter = entry.data[CONF_TANK_DIAMETER]
     length = entry.data[CONF_TANK_LENGTH]
     price = entry.options.get(CONF_PRICE_PER_LITRE, DEFAULT_PRICE_PER_LITRE)
+    price_sensor_id = entry.options.get(CONF_PRICE_SENSOR) or None
 
     oil_depth_sensor = TankOilDepthSensor(entry)
     volume_sensor = TankVolumeSensor(entry, diameter, length)
@@ -75,6 +77,7 @@ async def async_setup_entry(
             "yearly": yearly_cost,
         },
         refill_sensor=last_refill_sensor,
+        price_sensor_id=price_sensor_id,
     )
 
     async_add_entities(
@@ -261,6 +264,7 @@ class UsageStoredData(SensorExtraStoredData):
         super_data: SensorExtraStoredData,
         readings: list[dict[str, str | float]],
         last_refill: dict | None = None,
+        sensor_price: float | None = None,
     ) -> None:
         """Initialise stored data."""
         super().__init__(
@@ -268,12 +272,14 @@ class UsageStoredData(SensorExtraStoredData):
         )
         self.readings = readings
         self.last_refill = last_refill
+        self.sensor_price = sensor_price
 
     def as_dict(self) -> dict[str, Any]:
         """Return a dict representation of the stored data."""
         data = super().as_dict()
         data["readings"] = self.readings
         data["last_refill"] = self.last_refill
+        data["sensor_price"] = self.sensor_price
         return data
 
     @classmethod
@@ -286,6 +292,7 @@ class UsageStoredData(SensorExtraStoredData):
             extra,
             readings=restored.get("readings", []),
             last_refill=restored.get("last_refill"),
+            sensor_price=restored.get("sensor_price"),
         )
 
 
@@ -307,6 +314,7 @@ class TankUsageTrackerSensor(TankFillBaseSensor, RestoreSensor):
         usage_sensors: dict[str, TankPeriodUsageSensor],
         cost_sensors: dict[str, TankPeriodCostSensor],
         refill_sensor: TankLastRefillSensor | None = None,
+        price_sensor_id: str | None = None,
     ) -> None:
         """Initialise the usage tracker sensor."""
         super().__init__(entry)
@@ -315,6 +323,8 @@ class TankUsageTrackerSensor(TankFillBaseSensor, RestoreSensor):
         self._usage_sensors = usage_sensors
         self._cost_sensors = cost_sensors
         self._refill_sensor = refill_sensor
+        self._price_sensor_id = price_sensor_id
+        self._sensor_price: float | None = None
         self._last_refill: dict | None = None
 
     @property
@@ -324,6 +334,7 @@ class TankUsageTrackerSensor(TankFillBaseSensor, RestoreSensor):
             super().extra_restore_state_data,
             readings=self._history.as_list(),
             last_refill=self._last_refill,
+            sensor_price=self._sensor_price,
         )
 
     async def async_added_to_hass(self) -> None:
@@ -339,6 +350,14 @@ class TankUsageTrackerSensor(TankFillBaseSensor, RestoreSensor):
                 self._last_refill = last_data.last_refill
                 if self._refill_sensor is not None:
                     self._refill_sensor.set_refill(self._last_refill)
+            if (
+                last_data is not None
+                and last_data.sensor_price is not None
+                and self._price_sensor_id is not None
+            ):
+                self._sensor_price = last_data.sensor_price
+                for cost_sensor in self._cost_sensors.values():
+                    cost_sensor.update_price(self._sensor_price)
 
     @callback
     def update_usage(self, volume: float) -> None:
@@ -348,7 +367,22 @@ class TankUsageTrackerSensor(TankFillBaseSensor, RestoreSensor):
             self._last_refill = refill
             if self._refill_sensor is not None:
                 self._refill_sensor.set_refill(refill)
+            if self._price_sensor_id is not None:
+                self._capture_price_from_sensor()
         self._recalculate()
+
+    def _capture_price_from_sensor(self) -> None:
+        """Read the price sensor and update cost sensors if valid."""
+        state = self.hass.states.get(self._price_sensor_id)
+        if state is None or state.state in ("unknown", "unavailable"):
+            return
+        try:
+            price = float(state.state)
+        except (ValueError, TypeError):
+            return
+        self._sensor_price = price
+        for cost_sensor in self._cost_sensors.values():
+            cost_sensor.update_price(price)
 
     def _recalculate(self) -> None:
         """Recalculate all rolling-window values and push to dependents."""
@@ -417,6 +451,10 @@ class TankPeriodCostSensor(TankFillBaseSensor):
         self._attr_unique_id = f"{entry.entry_id}_{id_suffix}"
         self._attr_translation_key = translation_key
         self._price_per_litre = price_per_litre
+
+    def update_price(self, new_price: float) -> None:
+        """Update the price per litre used for cost calculations."""
+        self._price_per_litre = new_price
 
     @callback
     def set_value(self, usage: float) -> None:

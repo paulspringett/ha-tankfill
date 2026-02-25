@@ -23,6 +23,7 @@ from homeassistant.helpers.selector import (
 from .const import (
     CONF_DEPTH_SENSOR,
     CONF_PRICE_PER_LITRE,
+    CONF_PRICE_SENSOR,
     CONF_TANK_DIAMETER,
     CONF_TANK_LENGTH,
     DEFAULT_PRICE_PER_LITRE,
@@ -51,6 +52,7 @@ class TankFillConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_PRICE_PER_LITRE: user_input.get(
                         CONF_PRICE_PER_LITRE, DEFAULT_PRICE_PER_LITRE
                     ),
+                    CONF_PRICE_SENSOR: user_input.get(CONF_PRICE_SENSOR, ""),
                 },
             )
 
@@ -89,6 +91,11 @@ class TankFillConfigFlow(ConfigFlow, domain=DOMAIN):
                             unit_of_measurement="GBP/L",
                             mode=NumberSelectorMode.BOX,
                         )
+                    ),
+                    vol.Optional(
+                        CONF_PRICE_SENSOR, default=""
+                    ): EntitySelector(
+                        EntitySelectorConfig(domain="sensor")
                     ),
                 }
             ),
@@ -129,6 +136,12 @@ class TankFillOptionsFlow(OptionsFlowWithConfigEntry):
                             unit_of_measurement="GBP/L",
                             mode=NumberSelectorMode.BOX,
                         )
+                    ),
+                    vol.Optional(
+                        CONF_PRICE_SENSOR,
+                        default=self.options.get(CONF_PRICE_SENSOR, ""),
+                    ): EntitySelector(
+                        EntitySelectorConfig(domain="sensor")
                     ),
                 }
             ),

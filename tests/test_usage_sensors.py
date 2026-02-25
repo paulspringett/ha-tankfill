@@ -1,7 +1,7 @@
 """Tests for the rolling-window usage and cost sensors."""
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -25,7 +25,7 @@ def _stub_write(sensor):
     sensor.async_write_ha_state = lambda: None
 
 
-def _make_sensors(price: float = 0.55):
+def _make_sensors(price: float = 0.55, price_sensor_id: str | None = None):
     """Create a full set of tracker + period + cost + refill sensors for testing."""
     entry = FakeConfigEntry()
 
@@ -50,6 +50,7 @@ def _make_sensors(price: float = 0.55):
             "yearly": yearly_cost,
         },
         refill_sensor=refill,
+        price_sensor_id=price_sensor_id,
     )
 
     # Stub async_write_ha_state on all sensors
@@ -276,3 +277,103 @@ class TestRefillSensor:
 
         assert tracker._last_refill is not None
         assert tracker._last_refill["litres_added"] == 200.0
+
+
+def _make_fake_hass(price_state="0.72"):
+    """Create a mock hass object with a price sensor state."""
+    hass = MagicMock()
+    state = MagicMock()
+    state.state = price_state
+    hass.states.get.return_value = state
+    return hass
+
+
+class TestPriceSensorCapture:
+    """Test that refill events capture price from a configured price sensor."""
+
+    def test_refill_with_price_sensor_updates_cost_sensors(self):
+        tracker, sensors = _make_sensors(price=0.55, price_sensor_id="sensor.oil_price")
+        tracker.hass = _make_fake_hass("0.72")
+
+        with patch("custom_components.tankfill.sensor.dt_util") as mock_dt:
+            mock_dt.now.return_value = _fake_now(days_ago=1)
+            tracker.update_usage(400.0)
+            mock_dt.now.return_value = _fake_now()
+            tracker.update_usage(600.0)  # refill
+
+        assert tracker._sensor_price == 0.72
+        for key in ("daily", "weekly", "monthly", "yearly"):
+            assert sensors[f"{key}_cost"]._price_per_litre == 0.72
+
+    def test_refill_without_price_sensor_leaves_cost_sensors_unchanged(self):
+        tracker, sensors = _make_sensors(price=0.55)
+
+        with patch("custom_components.tankfill.sensor.dt_util") as mock_dt:
+            mock_dt.now.return_value = _fake_now(days_ago=1)
+            tracker.update_usage(400.0)
+            mock_dt.now.return_value = _fake_now()
+            tracker.update_usage(600.0)  # refill
+
+        assert tracker._sensor_price is None
+        for key in ("daily", "weekly", "monthly", "yearly"):
+            assert sensors[f"{key}_cost"]._price_per_litre == 0.55
+
+    def test_non_refill_does_not_update_price(self):
+        tracker, sensors = _make_sensors(price=0.55, price_sensor_id="sensor.oil_price")
+        tracker.hass = _make_fake_hass("0.72")
+
+        with patch("custom_components.tankfill.sensor.dt_util") as mock_dt:
+            mock_dt.now.return_value = _fake_now(days_ago=1)
+            tracker.update_usage(500.0)
+            mock_dt.now.return_value = _fake_now()
+            tracker.update_usage(490.0)  # consumption, not refill
+
+        assert tracker._sensor_price is None
+        for key in ("daily", "weekly", "monthly", "yearly"):
+            assert sensors[f"{key}_cost"]._price_per_litre == 0.55
+
+    def test_refill_with_invalid_price_sensor_state(self):
+        tracker, sensors = _make_sensors(price=0.55, price_sensor_id="sensor.oil_price")
+        tracker.hass = _make_fake_hass("unavailable")
+        # The state itself is "unavailable"
+        state = MagicMock()
+        state.state = "unavailable"
+        tracker.hass.states.get.return_value = state
+
+        with patch("custom_components.tankfill.sensor.dt_util") as mock_dt:
+            mock_dt.now.return_value = _fake_now(days_ago=1)
+            tracker.update_usage(400.0)
+            mock_dt.now.return_value = _fake_now()
+            tracker.update_usage(600.0)  # refill
+
+        assert tracker._sensor_price is None
+        for key in ("daily", "weekly", "monthly", "yearly"):
+            assert sensors[f"{key}_cost"]._price_per_litre == 0.55
+
+    def test_refill_with_missing_price_sensor(self):
+        tracker, sensors = _make_sensors(price=0.55, price_sensor_id="sensor.oil_price")
+        tracker.hass = MagicMock()
+        tracker.hass.states.get.return_value = None
+
+        with patch("custom_components.tankfill.sensor.dt_util") as mock_dt:
+            mock_dt.now.return_value = _fake_now(days_ago=1)
+            tracker.update_usage(400.0)
+            mock_dt.now.return_value = _fake_now()
+            tracker.update_usage(600.0)  # refill
+
+        assert tracker._sensor_price is None
+        for key in ("daily", "weekly", "monthly", "yearly"):
+            assert sensors[f"{key}_cost"]._price_per_litre == 0.55
+
+    def test_sensor_price_stored_on_tracker(self):
+        """Verify the tracker stores sensor_price so it can be persisted."""
+        tracker, sensors = _make_sensors(price=0.55, price_sensor_id="sensor.oil_price")
+        tracker.hass = _make_fake_hass("0.68")
+
+        with patch("custom_components.tankfill.sensor.dt_util") as mock_dt:
+            mock_dt.now.return_value = _fake_now(days_ago=1)
+            tracker.update_usage(400.0)
+            mock_dt.now.return_value = _fake_now()
+            tracker.update_usage(600.0)  # refill
+
+        assert tracker._sensor_price == 0.68

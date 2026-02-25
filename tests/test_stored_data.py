@@ -112,3 +112,44 @@ class TestUsageStoredData:
 
         assert restored is not None
         assert restored.last_refill is None
+
+    def test_round_trip_with_sensor_price(self):
+        data = UsageStoredData(
+            super_data=_make_super_data(),
+            readings=[],
+            sensor_price=0.72,
+        )
+        d = data.as_dict()
+        restored = UsageStoredData.from_dict(d)
+
+        assert restored is not None
+        assert restored.sensor_price == 0.72
+
+    def test_round_trip_without_sensor_price(self):
+        data = UsageStoredData(
+            super_data=_make_super_data(),
+            readings=[],
+        )
+        d = data.as_dict()
+        restored = UsageStoredData.from_dict(d)
+
+        assert restored is not None
+        assert restored.sensor_price is None
+
+    def test_as_dict_includes_sensor_price(self):
+        data = UsageStoredData(
+            super_data=_make_super_data(),
+            readings=[],
+            sensor_price=0.68,
+        )
+        d = data.as_dict()
+
+        assert "sensor_price" in d
+        assert d["sensor_price"] == 0.68
+
+    def test_from_dict_defaults_sensor_price_none(self):
+        d = _make_super_data().as_dict()
+        restored = UsageStoredData.from_dict(d)
+
+        assert restored is not None
+        assert restored.sensor_price is None

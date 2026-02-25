@@ -8,13 +8,15 @@
           "depth_sensor": "Depth sensor",
           "tank_diameter": "Tank diameter",
           "tank_length": "Tank length",
-          "price_per_litre": "Price per litre"
+          "price_per_litre": "Price per litre",
+          "price_sensor": "Price sensor"
         },
         "data_description": {
           "depth_sensor": "Sensor entity that reports the oil depth in cm.",
           "tank_diameter": "Internal diameter of the horizontal cylindrical tank in cm.",
           "tank_length": "Internal length of the horizontal cylindrical tank in cm.",
-          "price_per_litre": "Cost of heating oil per litre in GBP."
+          "price_per_litre": "Cost of heating oil per litre in GBP.",
+          "price_sensor": "Optional sensor providing a live price per litre. When set, the price is captured on each refill event."
         }
       }
     }
@@ -24,10 +26,12 @@
       "init": {
         "title": "Tank Fill Options",
         "data": {
-          "price_per_litre": "Price per litre"
+          "price_per_litre": "Price per litre",
+          "price_sensor": "Price sensor"
         },
         "data_description": {
-          "price_per_litre": "Cost of heating oil per litre in GBP."
+          "price_per_litre": "Cost of heating oil per litre in GBP.",
+          "price_sensor": "Optional sensor providing a live price per litre. When set, the price is captured on each refill event."
         }
       }
     }
